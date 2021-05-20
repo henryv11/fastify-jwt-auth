@@ -46,7 +46,6 @@ const fastifyJwtAuth: FastifyPluginCallback<{
       Promise.resolve((req.headers[tokenConfig.headerPath] as string | undefined)?.split(' ')[1]),
     ...token,
   };
-
   const jwt = Object.freeze<FastifyInstance['jwt']>({
     sign: ({ sub, subject, userId, email, ...payload }, opts) =>
       new Promise((res, rej) =>
@@ -73,17 +72,9 @@ const fastifyJwtAuth: FastifyPluginCallback<{
               secret,
               {
                 ...opts,
-                algorithms: (opts?.algorithms || []).concat(algorithm),
-                audience: (<(string | RegExp | undefined)[]>(
-                  (opts?.audience ? (Array.isArray(opts.audience) ? opts.audience : [opts.audience]) : [])
-                ))
-                  .concat(audience)
-                  .filter((_): _ is string => !!_),
-                issuer: (<(string | undefined)[]>(
-                  (opts?.issuer ? (Array.isArray(opts.issuer) ? opts.issuer : [opts.issuer]) : [])
-                ))
-                  .concat(issuer)
-                  .filter((_): _ is string => !!_),
+                algorithms: castArray(opts?.algorithms).concat(algorithm).filter(isNonNullable),
+                audience: castArray(opts?.audience).concat(audience).filter(isNonNullable),
+                issuer: castArray(opts?.issuer).concat(issuer).filter(isNonNullable),
               },
               (err, decoded) => {
                 if (err) return rej(err);
@@ -150,6 +141,14 @@ class UnauthorizedError extends Error {
     super('Unauthorized');
     Error.captureStackTrace(this);
   }
+}
+
+function castArray<T>(value: T): (T extends (infer U)[] ? U : T)[] {
+  return (Array.isArray(value) ? value : [value]) as any;
+}
+
+function isNonNullable<T>(value: T): value is NonNullable<T> {
+  return value != null;
 }
 
 declare module 'fastify' {
