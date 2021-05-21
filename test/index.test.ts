@@ -20,9 +20,9 @@ function getConfiguredApp() {
   app.register(FastifyJWT, {
     secret,
     algorithm: 'RS256',
-    audience: 'fidget-spinners.com',
-    issuer: 'fidget-spinners-auth',
-    token: {},
+    audience: 'poop',
+    issuer: 'peep',
+    jwtid: '123456',
   });
 
   return app;
@@ -34,7 +34,6 @@ describe('fastify-jwt', () => {
     app.get('/', {
       authorize: true,
       handler: (req, res) => {
-        console.log(req.token);
         res.send(req.token?.message + ' ' + req.token?.sub);
       },
     });
@@ -49,7 +48,7 @@ describe('fastify-jwt', () => {
       .inject({
         path: '/',
         method: 'GET',
-        headers: { authorization: `Bearer ${await app.jwt.sign({ message, userId })}` },
+        headers: { authorization: `Bearer ${await app.jwt.sign({ message, sub: userId })}` },
       })
       .then(res => res.body);
     expect(res2).toBe(message + ' ' + userId);

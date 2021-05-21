@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import {
   FastifyInstance,
   FastifyPluginCallback,
@@ -8,99 +7,98 @@ import {
   RouteShorthandOptions,
 } from 'fastify';
 import fp from 'fastify-plugin';
-import { Algorithm, Secret, sign, SignOptions, verify, VerifyOptions } from 'jsonwebtoken';
+import jwt from 'jsonwebtoken';
 
 const fastifyJwtAuth: FastifyPluginCallback<{
-  secret: Secret;
-  algorithm: Algorithm;
-  audience?: string;
-  issuer?: string;
-  token?: {
-    description?: string;
-    example?: string;
-    get?: (req: FastifyRequest) => Promise<string | undefined>;
-    headerPath?: string;
-    validatePayload?: (token: unknown) => token is Exclude<FastifyRequest['token'], null>;
-  };
-  strategy?: (req: FastifyRequest, conf: (RouteOptions | RouteShorthandOptions)['authorize']) => Promise<void>;
-}> = function (
+  algorithm: jwt.Algorithm;
+  getToken?: (req: FastifyRequest) => Promise<string | undefined>;
+  secret: jwt.Secret | Promise<jwt.Secret>;
+  signOptions?: jwt.SignOptions;
+  strategy?: (
+    req: FastifyRequest,
+    tokenResult: { token: NonNullable<FastifyRequest['token']> } | { error: string },
+    conf: (RouteOptions | RouteShorthandOptions)['authorize'],
+  ) => Promise<void>;
+  tokenDescription?: string;
+  tokenExample?: string;
+  tokenHeaderPath?: string;
+  validateTokenPayload?: (token: unknown) => token is NonNullable<FastifyRequest['token']>;
+  verifyOptions?: jwt.VerifyOptions;
+  issuer?: string | string[];
+  audience?: string | string[];
+  jwtid?: string;
+}> = async function (
   app,
   {
-    secret,
     algorithm,
-    audience,
-    token,
-    issuer,
+    getToken = (req: FastifyRequest) =>
+      Promise.resolve((req.headers[tokenHeaderPath] as string | undefined)?.split(' ')[1]),
+    secret: _secret,
+    signOptions,
     strategy = req =>
       req.token ? Promise.resolve<void>(void 0) : Promise.reject(new UnauthorizedError({ response: req.tokenError })),
+    tokenDescription = 'JSON Web Token in format "Bearer [token]',
+    tokenExample = 'Bearer eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY0IiwiaWF0IjoxNjAxODE0Mzc4fQ.Cqo8aBPhJN-hVN9wpAYNnIbLZ8M8ORMAMj_6ZIQTGV_g1hx3dti5Qjelgup2eh2dEnbP3aNmLqHKA7vYrJZjBQ',
+    tokenHeaderPath = 'authorization',
+    validateTokenPayload = () => true,
+    verifyOptions,
+    issuer,
+    audience,
+    jwtid,
   },
-  done,
 ) {
-  const tokenConfig = {
-    headerPath: 'authorization',
-    description: 'JSON Web Token in format "Bearer [token]',
-    validatePayload: () => true,
-    example:
-      'Bearer eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY0IiwiaWF0IjoxNjAxODE0Mzc4fQ.Cqo8aBPhJN-hVN9wpAYNnIbLZ8M8ORMAMj_6ZIQTGV_g1hx3dti5Qjelgup2eh2dEnbP3aNmLqHKA7vYrJZjBQ',
-    get: (req: FastifyRequest) =>
-      Promise.resolve((req.headers[tokenConfig.headerPath] as string | undefined)?.split(' ')[1]),
-    ...token,
-  };
-  const jwt = Object.freeze<FastifyInstance['jwt']>({
-    sign: ({ sub, subject, userId, email, ...payload }, opts) =>
-      new Promise((res, rej) =>
-        sign(
-          payload,
-          secret,
-          {
-            ...opts,
-            algorithm,
-            ...(audience && { audience }),
-            ...(issuer && { issuer }),
-            subject: String(sub || subject || userId || email),
-          },
-          (err, token) => (err ? rej(err) : res(token as string)),
-        ),
-      ),
+  const secret = await _secret;
 
-    decode: (token, opts) =>
-      !token
-        ? Promise.reject(new Error('missing token'))
-        : new Promise((res, rej) =>
-            verify(
-              token,
-              secret,
-              {
-                ...opts,
-                algorithms: castArray(opts?.algorithms).concat(algorithm).filter(isNonNullable),
-                audience: castArray(opts?.audience).concat(audience).filter(isNonNullable),
-                issuer: castArray(opts?.issuer).concat(issuer).filter(isNonNullable),
-              },
-              (err, decoded) => {
-                if (err) return rej(err);
-                if (!decoded || !tokenConfig.validatePayload(decoded)) return rej(new Error('invalid token payload'));
-                return res(decoded);
-              },
-            ),
-          ),
+  const sign: FastifyInstance['jwt']['sign'] = function sign(payload, opts = sign.options) {
+    return new Promise((resolve, reject) =>
+      jwt.sign(payload, secret, opts, (err, token) => (err ? reject(err) : resolve(token as string))),
+    );
+  };
+
+  const decode: FastifyInstance['jwt']['decode'] = function decode(token, opts = decode.options) {
+    if (!token) throw new Error('missing token');
+    return new Promise((resolve, reject) =>
+      jwt.verify(token, secret, opts, (err, decoded) => {
+        if (err) return reject(err);
+        if (!decoded || !validateTokenPayload(decoded)) return reject(new Error('invalid token payload'));
+        return resolve(decoded);
+      }),
+    );
+  };
+
+  sign.options = Object.freeze<jwt.SignOptions>({
+    algorithm,
+    ...signOptions,
+    ...((jwtid || signOptions?.jwtid) && { jwtid: jwtid || signOptions?.jwtid }),
+    ...((audience || signOptions?.audience) && { audience: audience || signOptions?.audience }),
+    ...((issuer || signOptions?.issuer) && {
+      issuer: (issuer && Array.isArray(issuer) ? issuer[0] : issuer) || signOptions?.issuer,
+    }),
   });
 
-  app.decorate('jwt', jwt);
+  decode.options = Object.freeze<jwt.VerifyOptions>({
+    jwtid,
+    ...verifyOptions,
+    algorithms: new Array().concat(algorithm, verifyOptions?.algorithms).filter(Boolean),
+    issuer: new Array().concat(issuer, verifyOptions?.issuer).filter(Boolean),
+    audience: new Array().concat(audience, verifyOptions?.audience).filter(Boolean),
+  });
+
+  app.decorate('jwt', Object.freeze<FastifyInstance['jwt']>({ sign, decode }));
   app.decorateRequest('token', null);
   app.decorateRequest('tokenError', '');
-
-  app.addHook('onRequest', (req, _, done) =>
-    tokenConfig
-      .get(req)
-      .then(token =>
-        jwt
-          .decode(token)
-          .then(decoded => (req.token = decoded))
-          .catch(err => (req.tokenError = err.message))
-          .finally(done),
-      )
-      .catch(err => done(err)),
-  );
+  app.decorateRequest('getToken', async function (this: FastifyRequest) {
+    if (this.token) return { token: this.token };
+    if (this.tokenError) return { error: this.tokenError };
+    const token = await getToken(this);
+    try {
+      this.token = await app.jwt.decode(token);
+      return { token: this.token };
+    } catch (err) {
+      this.tokenError = err.message;
+      return { error: this.tokenError };
+    }
+  });
 
   app.addHook('onRoute', routeOptions => {
     if (!routeOptions.authorize) return;
@@ -109,30 +107,24 @@ const fastifyJwtAuth: FastifyPluginCallback<{
       headers: {
         ...(routeOptions.schema?.headers as any),
         type: 'object',
-        required: [...((routeOptions.schema?.headers as any)?.required || []), tokenConfig.headerPath],
+        required: [...((routeOptions.schema?.headers as any)?.required || []), tokenHeaderPath],
         properties: {
           ...(routeOptions.schema?.headers as any)?.properties,
-          [tokenConfig.headerPath]: {
+          [tokenHeaderPath]: {
             type: 'string',
-            example: tokenConfig.example,
-            description: tokenConfig.description,
+            example: tokenExample,
+            description: tokenDescription,
           },
         },
       },
     };
-    routeOptions.preValidation = new Array<preValidationHookHandler>().concat(
-      (req, _, done) =>
-        strategy(req, routeOptions.authorize)
-          .then(() => done())
-          .catch(err => done(err)),
-      routeOptions.preValidation || [],
-    );
+    routeOptions.preValidation = new Array<preValidationHookHandler>().concat(async function (req) {
+      await strategy(req, await req.getToken(), routeOptions.authorize);
+    }, routeOptions.preValidation || []);
   });
-
-  done();
 };
 
-export default fp(fastifyJwtAuth);
+export default fp(fastifyJwtAuth, { name: 'fastify-jwt-auth' });
 
 class UnauthorizedError extends Error {
   public code = 401;
@@ -143,18 +135,11 @@ class UnauthorizedError extends Error {
   }
 }
 
-function castArray<T>(value: T): (T extends (infer U)[] ? U : T)[] {
-  return (Array.isArray(value) ? value : [value]) as any;
-}
-
-function isNonNullable<T>(value: T): value is NonNullable<T> {
-  return value != null;
-}
-
 declare module 'fastify' {
   interface FastifyRequest {
     token: null | ({ iat: number } & Partial<Record<string | number, string | number>>);
     tokenError: string | '';
+    getToken: () => Promise<{ token: NonNullable<FastifyRequest['token']> } | { error: string }>;
   }
   interface RouteOptions {
     authorize?: Record<string, unknown> | boolean;
@@ -164,11 +149,16 @@ declare module 'fastify' {
   }
   interface FastifyInstance {
     jwt: Readonly<{
-      sign: (payload: Omit<Exclude<FastifyRequest['token'], null>, 'iat'>, opts?: SignOptions) => Promise<string>;
-      decode: (
+      sign: ((
+        payload: Omit<NonNullable<FastifyRequest['token']>, 'iat'>,
+        opts?: jwt.SignOptions,
+      ) => Promise<string>) & {
+        options: Readonly<jwt.SignOptions>;
+      };
+      decode: ((
         token: string | undefined | null | false,
-        opts?: VerifyOptions,
-      ) => Promise<Exclude<FastifyRequest['token'], null>>;
+        opts?: jwt.VerifyOptions,
+      ) => Promise<NonNullable<FastifyRequest['token']>>) & { options: Readonly<jwt.VerifyOptions> };
     }>;
   }
 }
